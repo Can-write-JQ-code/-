@@ -84,6 +84,10 @@ function autoResizeTextarea() {
 
 function handleServiceChange() {
     currentService = serviceSelect.value;
+    if (geminiSettings) {
+        // Hide image generation settings if in chat mode
+        geminiSettings.style.display = currentService === 'chat' ? 'none' : 'block';
+    }
     if (modelSelectGroup) {
         modelSelectGroup.style.display = currentService === 'gemini-image' ? 'block' : 'none';
     }
@@ -163,67 +167,115 @@ async function sendMessage() {
     const loadingId = addLoadingMessage();
 
     try {
-        // Prepare request body with generation parameters
-        const requestBody = {
-            message: userPrompt,
-            service: currentService,
-            aspect_ratio: aspectRatioSelect.value,
-            image_size: imageSizeSelect.value
-        };
+        let response;
+        let data;
 
-        if (currentService === 'gemini-image') {
-            requestBody.model = modelSelect.value;
-        }
+        if (currentService === 'chat') {
+            // Chat Mode
+            const messages = [];
 
-        if (referenceImage) {
-            requestBody.reference_image = referenceImage;
-        }
+            // Build history from chatHistory
+            // Note: This is a simple implementation. For production, you might want to limit history size.
+            // We need to map our internal chatHistory format to OpenAI format
+            chatHistory.forEach(msg => {
+                // Skip the message we just added (it's already in UI but not processed yet? No, we just pushed it... wait)
+                // addMessage pushes to chatHistory at the end.
+                // But we haven't pushed the current message to chatHistory yet?
+                // addMessage function pushes to chatHistory at line 302.
+                // So the current message IS in chatHistory.
 
-        // Send request
-        const response = await fetch(`${API_BASE_URL}/api/chat`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(requestBody)
-        });
+                // We should filter out the current message to avoid duplication if we are building it manually?
+                // Actually, let's just build the messages array from chatHistory, 
+                // BUT the last item in chatHistory is the one we just added (user message).
+                // We need to format it correctly.
 
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
+                const role = msg.sender === 'user' ? 'user' : 'assistant';
+                let content = msg.text;
 
-        const data = await response.json();
-
-        // Remove loading
-        removeLoadingMessage(loadingId);
-
-        // Add AI response
-        if (data.success) {
-            // Handle both image_url and image_data (base64)
-            let imageUrl = null;
-            if (data.image_url) {
-                imageUrl = data.image_url;
-            } else if (data.image_data) {
-                // Convert base64 to data URL
-                const mimeType = (data.metadata && (data.metadata.mime_type || data.metadata.mimeType)) || 'image/png';
-                let imagePayload = data.image_data || '';
-
-                if (imagePayload.startsWith('data:')) {
-                    imageUrl = imagePayload;
-                } else {
-                    let cleanedData = imagePayload.replace(/\s+/g, '');
-                    const paddingNeeded = cleanedData.length % 4;
-                    if (paddingNeeded) {
-                        cleanedData = cleanedData.padEnd(cleanedData.length + (4 - paddingNeeded), '=');
-                    }
-                    imageUrl = `data:${mimeType};base64,${cleanedData}`;
+                // If it's the user message and has an image, we need to format it as multimodal
+                if (role === 'user' && msg.imageUrl && msg.imageUrl.startsWith('data:')) {
+                    content = [
+                        { type: "text", text: msg.text || " " },
+                        { type: "image_url", image_url: { url: msg.imageUrl } }
+                    ];
                 }
+
+                messages.push({ role, content });
+            });
+
+            const requestBody = {
+                messages: messages
+            };
+
+            response = await fetch(`${API_BASE_URL}/api/text_chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            });
+
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            data = await response.json();
+
+            removeLoadingMessage(loadingId);
+
+            if (data.success) {
+                addMessage('assistant', data.message);
+            } else {
+                addMessage('assistant', `Chat Error: ${data.message}`);
             }
 
-            const message = data.message || `图片生成成功 (${aspectRatioSelect.value}, ${imageSizeSelect.value})`;
-            addMessage('assistant', message, imageUrl, data.metadata);
         } else {
-            addMessage('assistant', `生成失败: ${data.message}`, null);
+            // Image Generation Mode
+            const requestBody = {
+                message: userPrompt,
+                service: currentService,
+                aspect_ratio: aspectRatioSelect.value,
+                image_size: imageSizeSelect.value
+            };
+
+            if (currentService === 'gemini-image') {
+                requestBody.model = modelSelect.value;
+            }
+
+            if (referenceImage) {
+                requestBody.reference_image = referenceImage;
+            }
+
+            response = await fetch(`${API_BASE_URL}/api/chat`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            });
+
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            data = await response.json();
+
+            removeLoadingMessage(loadingId);
+
+            if (data.success) {
+                // Handle image response (same as before)
+                let imageUrl = null;
+                if (data.image_url) {
+                    imageUrl = data.image_url;
+                } else if (data.image_data) {
+                    const mimeType = (data.metadata && (data.metadata.mime_type || data.metadata.mimeType)) || 'image/png';
+                    let imagePayload = data.image_data || '';
+                    if (imagePayload.startsWith('data:')) {
+                        imageUrl = imagePayload;
+                    } else {
+                        let cleanedData = imagePayload.replace(/\s+/g, '');
+                        const paddingNeeded = cleanedData.length % 4;
+                        if (paddingNeeded) {
+                            cleanedData = cleanedData.padEnd(cleanedData.length + (4 - paddingNeeded), '=');
+                        }
+                        imageUrl = `data:${mimeType};base64,${cleanedData}`;
+                    }
+                }
+                const message = data.message || `图片生成成功 (${aspectRatioSelect.value}, ${imageSizeSelect.value})`;
+                addMessage('assistant', message, imageUrl, data.metadata);
+            } else {
+                addMessage('assistant', `生成失败: ${data.message}`, null);
+            }
         }
 
     } catch (error) {
@@ -232,7 +284,6 @@ async function sendMessage() {
         addMessage('assistant', `发生错误: ${error.message}。请确保后端服务正在运行。`, null);
     }
 
-    // Scroll to bottom
     scrollToBottom();
 }
 
@@ -441,6 +492,11 @@ async function checkAPIStatus() {
         const doubaoService = serviceList.find(s => s.id === 'doubao-image');
         if (doubaoService && !doubaoService.available) {
             console.warn('Doubao 服务未配置 API 密钥');
+        }
+
+        const chatService = serviceList.find(s => s.id === 'chat');
+        if (chatService && !chatService.available) {
+            console.warn('Chat 服务未配置 API 密钥');
         }
 
     } catch (error) {

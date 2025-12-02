@@ -2,7 +2,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import os
 from dotenv import load_dotenv
 from pathlib import Path
@@ -14,6 +14,7 @@ from services.dalle import DalleService
 from services.stable_diffusion import StableDiffusionService
 from services.gemini_image import GeminiImageService
 from services.doubao_image import DoubaoImageService
+from services.chat_service import ChatService
 
 # Load environment variables (support running from repo root)
 load_dotenv()
@@ -62,6 +63,13 @@ doubao_service = DoubaoImageService(
     model=os.getenv("DOUBAO_MODEL", "doubao-seedream-4-0-250828")
 )
 
+# Chat Service (uses CHAT_API_KEY if available, otherwise falls back to others)
+chat_service = ChatService(
+    api_key=os.getenv("CHAT_API_KEY") or gemini_api_key or os.getenv("OPENAI_API_KEY"),
+    base_url=os.getenv("CHAT_BASE_URL", "https://yunwu.ai/v1"),
+    model=os.getenv("CHAT_MODEL", "gpt-5-2025-08-07")
+)
+
 # Available services
 SERVICES = {
     "dalle": dalle_service,
@@ -92,29 +100,56 @@ class ImageGenerationRequest(BaseModel):
     reference_image: Optional[str] = None  # Base64 encoded reference image
 
 
+class TextChatRequest(BaseModel):
+    messages: List[Dict[str, Any]]
+    model: Optional[str] = None
+
+
 @app.get("/")
 async def root():
     """API health check"""
     return {
         "status": "online",
         "message": "AI Image Generation API",
-        "available_services": list(SERVICES.keys())
+        "available_services": list(SERVICES.keys()) + ["chat"]
     }
 
 
 @app.get("/api/services")
 async def get_services():
     """Get list of available AI services"""
-    return {
-        "services": [
-            {
-                "id": key,
-                "name": service.get_service_name(),
-                "available": service.api_key is not None
-            }
-            for key, service in SERVICES.items()
-        ]
-    }
+    services_list = [
+        {
+            "id": key,
+            "name": service.get_service_name(),
+            "available": service.api_key is not None
+        }
+        for key, service in SERVICES.items()
+    ]
+    # Add Chat service
+    services_list.append({
+        "id": "chat",
+        "name": "AI Chat (GPT-4o)",
+        "available": chat_service.api_key is not None
+    })
+    return {"services": services_list}
+
+
+@app.post("/api/text_chat")
+async def text_chat(request: TextChatRequest):
+    """
+    Handle text/multimodal chat requests
+    """
+    try:
+        print(f"[DEBUG] Received chat request with {len(request.messages)} messages")
+        result = await chat_service.chat_completion(
+            messages=request.messages,
+            model=request.model
+        )
+        return result
+    except Exception as e:
+        print(f"[ERROR] Exception in text_chat endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/chat")

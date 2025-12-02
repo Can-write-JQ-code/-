@@ -1,0 +1,37 @@
+import http.client
+import json
+
+conn = http.client.HTTPSConnection("yunwu.ai")
+payload = json.dumps({
+   "model": "gpt-5.1-2025-11-13",
+   "messages": [
+      {
+         "role": "system",
+         "content": "You are a helpful assistant."
+      },
+      {
+         "role": "user",
+         "content": [
+            {
+               "type": "text",
+               "text": "这张图片里有什么?请详细描述。"
+            },
+            {
+               "type": "image_url",
+               "image_url": {
+                  "url": "data:image/png;base64,......."
+               }
+            }
+         ]
+      }
+   ]
+})
+headers = {
+   'Accept': 'application/json',
+   'Authorization': 'Bearer <token>',
+   'Content-Type': 'application/json'
+}
+conn.request("POST", "/v1/chat/completions", payload, headers)
+res = conn.getresponse()
+data = res.read()
+print(data.decode("utf-8"))
